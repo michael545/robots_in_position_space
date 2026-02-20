@@ -1,10 +1,10 @@
 # Robot Control in Position Space: Architectural Analysis
 
-This document synthesizes the architectural transition from velocity-based control (`cmd_vel`) to position-space trajectory tracking for autonomous ground vehicles (AGVs). It details the control theory, the bottlenecks in standard ROS 2 navigation stacks, and the implementation of deterministic hardware interfaces.
+This document synthesizes the architectural transition from velocity-based control (`cmd_vel`) to position-space trajectory tracking for autonomous ground vehicles (AGVs). It details the control theory, the bottlenecks in standard ROS2 navigation stacks like move_smooth, and provides the implementation plan of deterministic hardware interfaces.
 
 ## 1. The Velocity Bottleneck
 
-Standard ROS 2 navigation stacks (Nav2) typically operate on a "Sense-Plan-Act" cycle that outputs a velocity command (`geometry_msgs/Twist`) at 20Hz-50Hz. This introduces a fundamental control problem when aiming for high-precision, smooth motion.
+Standard ROS 2 navigation stacks (Nav2) typically operate on a "Sense-Plan-Act" cycle that outputs a cmd_vel command (`geometry_msgs/Twist`) message at 20Hz-50Hz. This introduces a fundamental control problem when aiming for high-precision, smooth motion.
 
 ### The Problem: Redundant Integration
 1.  **Planner (MPPI/TEB):** Calculates a precise trajectory $(x(t), y(t), 	heta(t))$ and its derivatives $(\dot{x}, \dot{y}, \dot{	heta})$.
@@ -71,7 +71,8 @@ To implement this with MPPI (Model Predictive Path Integral):
     *   Optimizes a trajectory in Task Space $(x, y, 	heta)$.
     *   **Crucial Step:** Instead of truncating to `cmd_vel`, extract the optimal trajectory (e.g., top 1-2 seconds).
 3.  **Inverse Kinematics (IK) Node:**
-    *   Converts Task Space Trajectory $ightarrow$ Joint Space Trajectory.
+    *   Converts Task Space Trajectory $
+ightarrow$ Joint Space Trajectory.
     *   For Differential Drive:
         $$ \Delta q_L = \Delta s - (\Delta 	heta \cdot \frac{L}{2}) $$
         $$ \Delta q_R = \Delta s + (\Delta 	heta \cdot \frac{L}{2}) $$
