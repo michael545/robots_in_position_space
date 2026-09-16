@@ -1,5 +1,14 @@
 # Robot Control in Position Space: Architectural Analysis
 
+> **Deep-Dive Engineering Documentation Suite:**  
+> For the complete, mathematically rigorous derivation of the 3-Body Dynamics, Continuous Stribeck Friction Tribology, Kinetic Mixer Matrix Proof, Modal Closed-Loop Feedback, and Multi-Sensor Traction Control, see the **[Comprehensive Engineering Documentation Suite](docs/README.md)**.
+> 
+> * [Doc 01: Executive Summary & Legacy Control Audit](docs/01_EXECUTIVE_SUMMARY_AND_LEGACY_AUDIT.md)
+> * [Doc 02: Decoupled 3-Body Dynamics & Continuous Friction Modeling](docs/02_DECOUPLED_3BODY_DYNAMICS_AND_PHYSICS.md)
+> * [Doc 03: The Algebraic Kinetic Mixer & Torque Vectoring](docs/03_ALGEBRAIC_KINETIC_MIXER_AND_TORQUE_VECTORING.md)
+> * [Doc 04: Closed-Loop Modal Feedback & ST MCSDK FOC Integration](docs/04_CLOSED_LOOP_MODAL_FEEDBACK_AND_FOC_INTEGRATION.md)
+> * [Doc 05: Traction Control & Multi-Sensor Slip Detection](docs/05_TRACTION_CONTROL_AND_SLIP_DETECTION.md)
+
 This document synthesizes the architectural transition from velocity-based control (`cmd_vel`) to position-space trajectory tracking for autonomous ground vehicles (AGVs). It details the control theory, the bottlenecks in standard ROS2 navigation stacks like move_smooth, and provides the implementation plan of deterministic hardware interfaces.
 
 ## 1. The Velocity Bottleneck
