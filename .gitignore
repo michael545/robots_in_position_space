@@ -12,3 +12,7 @@ clothoid_trajectory_controller/
 mcb_g6_firmware/
 path_smoother/move_smooth/
 ubiquity_route_manager/
+
+# Internal Agent Workspaces
+.agents/
+
