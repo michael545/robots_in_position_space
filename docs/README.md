@@ -47,6 +47,12 @@ This documentation captures the first-principles mathematics, multi-body physica
 * **High-Resolution Color-Coded Mermaid.js Flowchart:** Visualizes the complete decoupled modal control architecture.
 * **1-to-1 Code Verification Proof:** Direct mapping table linking every diagram block to its exact variable and line of C code in `drive_2dof.c`.
 
+### [Document 08: Physical AI & The Embodied Dynamics Contract](08_PHYSICAL_AI_AND_EMBODIED_DYNAMICS_CONTRACT.md)
+* **The Classical Robotics Paradox:** Resolving the gap where the SBC attempts to command `effort` without real physical model telemetry.
+* **Cerebrum vs. Brainstem Division:** High-rate local impedance damping and FOC current control on the MCU; macro-physics and geometric clothoids on the SBC.
+* **The Generalized Impedance Contract:** Formulating $(position, velocity, effort)$ as $\tau = \tau_{ff} + K_p(\theta_{des} - \theta) + B_d(\dot{\theta}_{des} - \dot{\theta})$.
+* **Online Adaptive Identification:** Estimating payload mass ($M$) and surface friction ($\mu$) dynamically from real-time current and acceleration.
+
 ---
 
 
