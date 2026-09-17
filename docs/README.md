@@ -53,6 +53,13 @@ This documentation captures the first-principles mathematics, multi-body physica
 * **The Generalized Impedance Contract:** Formulating $(position, velocity, effort)$ as $\tau = \tau_{ff} + K_p(\theta_{des} - \theta) + B_d(\dot{\theta}_{des} - \dot{\theta})$.
 * **Online Adaptive Identification:** Estimating payload mass ($M$) and surface friction ($\mu$) dynamically from real-time current and acceleration.
 
+### [Document 09: Outdoor Terrain Dynamics, Incline Physics & Gravity Compensation](09_OUTDOOR_TERRAIN_DYNAMICS_AND_INCLINE_PHYSICS.md)
+* **The Outdoor Robotics Dilemma:** Why dynamic outdoor environments (mud, gravel, slopes) make firmware dynamics mandatory, not redundant.
+* **Invariants vs. Variables:** Separating physical invariants ($M, I_{zz}, r, b, K_t$) from terrain variables ($\theta_{\text{pitch}}, \mu, \tau_{\text{scrub}}$).
+* **Incline Physics & Gravity Force Balance:** $F_g = M \cdot g \cdot \sin(\theta)$ and zero-latency hill-start anti-rollback via onboard IMU pitch telemetry.
+* **Tire Scrub & Friction Adaptivity:** Dynamic trimming of skid-steer yaw scrub via closed-loop onboard IMU rate gyroscope.
+* **The Sub-Millisecond Bandwidth Imperative:** Why the MCU's $< 1\text{ ms}$ reaction time is required to prevent slip-trenching and rollback that a $50\text{ ms}$ SBC transport loop cannot catch.
+
 ---
 
 
