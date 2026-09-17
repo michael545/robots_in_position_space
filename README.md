@@ -9,6 +9,8 @@
 > * [Doc 04: Closed-Loop Modal Feedback & ST MCSDK FOC Integration](docs/04_CLOSED_LOOP_MODAL_FEEDBACK_AND_FOC_INTEGRATION.md)
 > * [Doc 05: Traction Control & Multi-Sensor Slip Detection](docs/05_TRACTION_CONTROL_AND_SLIP_DETECTION.md)
 > * [Doc 06: Formal Control System Graph Specification (JSON Graph)](docs/06_CONTROL_SYSTEM_GRAPH_SPECIFICATION.json)
+> * [Doc 07: Visual Control Systems Architecture (Mermaid.js)](docs/07_MERMAID_CONTROL_SYSTEM_ARCHITECTURE.md)
+
 
 
 This document synthesizes the architectural transition from velocity-based control (`cmd_vel`) to position-space trajectory tracking for autonomous ground vehicles (AGVs). It details the control theory, the bottlenecks in standard ROS2 navigation stacks like move_smooth, and provides the implementation plan of deterministic hardware interfaces.

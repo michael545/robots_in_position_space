@@ -43,7 +43,12 @@ This documentation captures the first-principles mathematics, multi-body physica
 * **Exact Mathematical Port Formulations:** Defines every input/output port, physical engineering units, and transfer equations.
 * **Explicit Feedback Error Subtraction:** Mathematically defines the exact nodes where measured wheel odometry ($v_{\text{odom}}$) and IMU gyro ($\omega_{\text{gyro}}$) subtract from desired reference states.
 
+### [Document 07: Visual Control Systems Architecture (Mermaid.js)](07_MERMAID_CONTROL_SYSTEM_ARCHITECTURE.md)
+* **High-Resolution Color-Coded Mermaid.js Flowchart:** Visualizes the complete decoupled modal control architecture.
+* **1-to-1 Code Verification Proof:** Direct mapping table linking every diagram block to its exact variable and line of C code in `drive_2dof.c`.
+
 ---
+
 
 
 ## The Master Architecture Flow
