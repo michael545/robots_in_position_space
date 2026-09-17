@@ -1,0 +1,718 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Decoupled 2-DoF Modal Motion Control System Graph Specification",
+  "version": "1.0.0",
+  "platform": "Ubiquity Robotics Magni MCB G6 (STM32G474QETX + ST MCSDK)",
+  "execution_frequency_hz": 100.0,
+  "execution_period_ms": 10.0,
+  "description": "Formal topological directed graph representing all mathematical blocks, summing junctions, error subtractors, feedforward physics, feedback governors, mixer matrices, and sensor observers in the 2-DoF Modal Motion Controller.",
+  "parameters": {
+    "robot_chassis_mass_kg": 56.0,
+    "wheel_mass_kg": 4.1,
+    "wheel_inertia_kgm2": 0.021,
+    "wheel_radius_m": 0.1015,
+    "track_width_m": 0.3300,
+    "effective_mass_kg": 64.20,
+    "chassis_yaw_inertia_kgm2": 2.20,
+    "effective_yaw_inertia_kgm2": 2.48,
+    "motor_kt_nm_per_a": 0.115,
+    "gearbox_ratio": 5.14,
+    "st_current_scale_digits_per_a": 1866.0,
+    "stribeck_static_force_fs_n": 18.5,
+    "stribeck_coulomb_force_fc_n": 12.0,
+    "stribeck_velocity_threshold_vs_mps": 0.04,
+    "stribeck_smoothing_layer_eps_mps": 0.01,
+    "stribeck_viscous_coeff_cv_ns_per_m": 14.2,
+    "yaw_scrub_static_torque_ts_nm": 4.80,
+    "yaw_scrub_coulomb_torque_tc_nm": 3.10,
+    "yaw_scrub_velocity_threshold_ws_radps": 0.08,
+    "yaw_scrub_smoothing_layer_eps_radps": 0.02,
+    "yaw_scrub_viscous_coeff_cw_nms_per_rad": 2.90,
+    "longitudinal_kp_v": 45.0,
+    "longitudinal_ki_v": 15.0,
+    "longitudinal_max_i_force_n": 120.0,
+    "yaw_kp_w": 8.50,
+    "yaw_ki_w": 3.20,
+    "yaw_max_i_torque_nm": 25.0,
+    "max_linear_acceleration_mps2": 1.50,
+    "max_linear_deceleration_mps2": 2.50,
+    "max_angular_acceleration_radps2": 4.00
+  },
+  "subsystems": [
+    {
+      "id": "subsystem_1_reference_generation",
+      "name": "Reference Generation & S-Curve Filtering",
+      "description": "Transforms high-level discrete Twist velocity commands from ROS /cmd_vel into continuous, jerk-bounded velocity and acceleration reference states."
+    },
+    {
+      "id": "subsystem_2_longitudinal_modal_channel",
+      "name": "Longitudinal Modal Control Channel",
+      "description": "Calculates the total generalized forward driving force F_linear by combining first-principles 3-body inertia & Stribeck friction feedforward with odometry-feedback PI speed regulation."
+    },
+    {
+      "id": "subsystem_3_yaw_modal_channel",
+      "name": "Yaw Modal Control Channel",
+      "description": "Calculates the total generalized yaw moment tau_yaw by combining chassis rotational inertia & tire scrub feedforward with IMU gyro feedback PI regulation."
+    },
+    {
+      "id": "subsystem_4_algebraic_kinetic_mixer",
+      "name": "Algebraic Kinetic Mixer Matrix",
+      "description": "Transforms the 2-DoF generalized modal wrench [F_linear, tau_yaw]^T into left and right actuator wheel torques [tau_L, tau_R]^T via transposed Jacobian mapping."
+    },
+    {
+      "id": "subsystem_5_foc_actuator_interface",
+      "name": "ST MCSDK FOC Current Actuator Interface",
+      "description": "Translates wheel shaft torques to motor rotor current Iq in physical Amperes and scales to 16-bit integer counts for the ST Motor Control SDK 16 kHz FOC loop."
+    },
+    {
+      "id": "subsystem_6_physical_robot_plant",
+      "name": "Physical AGV Robot Plant & Environment",
+      "description": "The coupled 3-body mechanical system responding to wheel torques subject to rolling friction, payload variation, floor incline, and carpet drag."
+    },
+    {
+      "id": "subsystem_7_feedback_sensor_observers",
+      "name": "Feedback Sensor Observers",
+      "description": "Physical sensor hardware (optical quadrature encoders and 6-axis ST LSM6DSOX IMU) measuring actual motion states in real time."
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node_ros_cmd_vel_input",
+      "subsystem_id": "subsystem_1_reference_generation",
+      "name": "ROS cmd_vel Receiver",
+      "type": "input_interface",
+      "description": "Decodes incoming geometry_msgs/msg/Twist from teleoperation or Nav2 local planner.",
+      "inputs": [],
+      "outputs": [
+        { "port": "v_cmd", "units": "m/s", "data_type": "float32", "description": "Raw commanded linear velocity" },
+        { "port": "omega_cmd", "units": "rad/s", "data_type": "float32", "description": "Raw commanded yaw angular rate" }
+      ],
+      "equations": "v_cmd = msg.linear.x; omega_cmd = msg.angular.z;"
+    },
+    {
+      "id": "node_linear_rate_limiter",
+      "subsystem_id": "subsystem_1_reference_generation",
+      "name": "Linear Acceleration Rate Limiter",
+      "type": "stateful_filter",
+      "description": "Differentiates and bounds the step command to generate jerk-bounded speed and acceleration profiles.",
+      "inputs": [
+        { "port": "v_cmd", "units": "m/s", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "v_des", "units": "m/s", "data_type": "float32", "description": "Filtered reference velocity" },
+        { "port": "a_des", "units": "m/s^2", "data_type": "float32", "description": "Reference linear acceleration (dv_des/dt)" }
+      ],
+      "equations": "a_des[k] = clamp((v_cmd[k] - v_des[k-1]) / dt, -d_max, a_max); v_des[k] = v_des[k-1] + a_des[k] * dt;"
+    },
+    {
+      "id": "node_yaw_rate_limiter",
+      "subsystem_id": "subsystem_1_reference_generation",
+      "name": "Yaw Angular Acceleration Rate Limiter",
+      "type": "stateful_filter",
+      "description": "Differentiates and bounds the rotational command to generate smooth angular velocity and acceleration profiles.",
+      "inputs": [
+        { "port": "omega_cmd", "units": "rad/s", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "omega_des", "units": "rad/s", "data_type": "float32", "description": "Filtered reference yaw rate" },
+        { "port": "alpha_des", "units": "rad/s^2", "data_type": "float32", "description": "Reference angular acceleration (domega_des/dt)" }
+      ],
+      "equations": "alpha_des[k] = clamp((omega_cmd[k] - omega_des[k-1]) / dt, -alpha_max, alpha_max); omega_des[k] = omega_des[k-1] + alpha_des[k] * dt;"
+    },
+    {
+      "id": "node_longitudinal_feedforward_inertia",
+      "subsystem_id": "subsystem_2_longitudinal_modal_channel",
+      "name": "Longitudinal Inertia Feedforward",
+      "type": "gain",
+      "description": "Calculates D'Alembert inertial force for 3-body system (chassis + 2 wheels).",
+      "inputs": [
+        { "port": "a_des", "units": "m/s^2", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "F_iner_ff", "units": "N", "data_type": "float32", "description": "Feedforward inertial force" }
+      ],
+      "equations": "F_iner_ff = M_eff * a_des = (M + 2*mw + 2*Iw/r^2) * a_des"
+    },
+    {
+      "id": "node_longitudinal_feedforward_friction",
+      "subsystem_id": "subsystem_2_longitudinal_modal_channel",
+      "name": "Continuous Stribeck Friction Feedforward",
+      "type": "non_linear_evaluator",
+      "description": "Calculates C1-smooth static breakaway, Coulomb, and viscous friction force.",
+      "inputs": [
+        { "port": "v_des", "units": "m/s", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "F_strib_ff", "units": "N", "data_type": "float32", "description": "Feedforward friction compensation force" }
+      ],
+      "equations": "F_strib_ff = [Fc + (Fs - Fc)*exp(-(v_des/vs)^2)] * tanh(v_des/eps) + Cv * v_des"
+    },
+    {
+      "id": "node_longitudinal_error_subtractor",
+      "subsystem_id": "subsystem_2_longitudinal_modal_channel",
+      "name": "Longitudinal Speed Error Subtractor",
+      "type": "subtractor",
+      "description": "EXPLICIT FEEDBACK SUBTRACTION: Computes instantaneous linear velocity tracking error between reference and wheel odometry.",
+      "inputs": [
+        { "port": "in_reference", "units": "m/s", "data_type": "float32", "description": "Desired speed v_des (+)" },
+        { "port": "in_feedback", "units": "m/s", "data_type": "float32", "description": "Measured odometry speed v_odom (-)" }
+      ],
+      "outputs": [
+        { "port": "e_v", "units": "m/s", "data_type": "float32", "description": "Speed error (e_v = v_des - v_odom)" }
+      ],
+      "equations": "e_v = in_reference - in_feedback"
+    },
+    {
+      "id": "node_longitudinal_pi_controller",
+      "subsystem_id": "subsystem_2_longitudinal_modal_channel",
+      "name": "Longitudinal PI Speed Governor",
+      "type": "pi_controller",
+      "description": "Closed-loop PI regulator with conditional anti-windup clamping to eliminate steady-state speed droop under carpet/slope disturbances.",
+      "inputs": [
+        { "port": "e_v", "units": "m/s", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "F_lin_fb", "units": "N", "data_type": "float32", "description": "Feedback corrective force" }
+      ],
+      "equations": "P = Kp_v * e_v; I[k] = clamp(I[k-1] + Ki_v * e_v * dt, -Max_I, Max_I); F_lin_fb = P + I[k];"
+    },
+    {
+      "id": "node_longitudinal_wrench_summer",
+      "subsystem_id": "subsystem_2_longitudinal_modal_channel",
+      "name": "Longitudinal Wrench Summing Junction",
+      "type": "summer",
+      "description": "Sums physical feedforward force (muscle) and closed-loop feedback force (governor) to form the total generalized longitudinal force.",
+      "inputs": [
+        { "port": "in_iner_ff", "units": "N", "data_type": "float32" },
+        { "port": "in_strib_ff", "units": "N", "data_type": "float32" },
+        { "port": "in_fb", "units": "N", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "F_linear", "units": "N", "data_type": "float32", "description": "Total generalized longitudinal force" }
+      ],
+      "equations": "F_linear = in_iner_ff + in_strib_ff + in_fb"
+    },
+    {
+      "id": "node_yaw_feedforward_inertia",
+      "subsystem_id": "subsystem_3_yaw_modal_channel",
+      "name": "Yaw Inertia Feedforward",
+      "type": "gain",
+      "description": "Calculates rotational inertial torque for chassis and wheel track width geometry.",
+      "inputs": [
+        { "port": "alpha_des", "units": "rad/s^2", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "tau_iner_ff", "units": "Nm", "data_type": "float32", "description": "Feedforward inertial yaw torque" }
+      ],
+      "equations": "tau_iner_ff = I_eff * alpha_des = (Iz + mw*b^2/2 + Iw*b^2/(2*r^2)) * alpha_des"
+    },
+    {
+      "id": "node_yaw_feedforward_scrub",
+      "subsystem_id": "subsystem_3_yaw_modal_channel",
+      "name": "Tire Scrub Friction Feedforward",
+      "type": "non_linear_evaluator",
+      "description": "Calculates rotational scrub friction opposing chassis turning maneuvers.",
+      "inputs": [
+        { "port": "omega_des", "units": "rad/s", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "tau_scrub_ff", "units": "Nm", "data_type": "float32", "description": "Feedforward scrub compensation torque" }
+      ],
+      "equations": "tau_scrub_ff = [Tc + (Ts - Tc)*exp(-(omega_des/ws)^2)] * tanh(omega_des/eps_w) + Cw * omega_des"
+    },
+    {
+      "id": "node_yaw_error_subtractor",
+      "subsystem_id": "subsystem_3_yaw_modal_channel",
+      "name": "Yaw Rate Error Subtractor",
+      "type": "subtractor",
+      "description": "EXPLICIT FEEDBACK SUBTRACTION: Computes instantaneous yaw angular velocity tracking error between reference and onboard IMU gyro.",
+      "inputs": [
+        { "port": "in_reference", "units": "rad/s", "data_type": "float32", "description": "Desired yaw rate omega_des (+)" },
+        { "port": "in_feedback", "units": "rad/s", "data_type": "float32", "description": "Measured IMU gyro rate omega_gyro (-)" }
+      ],
+      "outputs": [
+        { "port": "e_omega", "units": "rad/s", "data_type": "float32", "description": "Yaw rate error (e_omega = omega_des - omega_gyro)" }
+      ],
+      "equations": "e_omega = in_reference - in_feedback"
+    },
+    {
+      "id": "node_yaw_pi_controller",
+      "subsystem_id": "subsystem_3_yaw_modal_channel",
+      "name": "Yaw PI Rate Governor",
+      "type": "pi_controller",
+      "description": "Closed-loop PI regulator with anti-windup clamping to eliminate heading wander and caster resistance.",
+      "inputs": [
+        { "port": "e_omega", "units": "rad/s", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "tau_yaw_fb", "units": "Nm", "data_type": "float32", "description": "Feedback corrective yaw torque" }
+      ],
+      "equations": "P = Kp_w * e_omega; I[k] = clamp(I[k-1] + Ki_w * e_omega * dt, -Max_I_w, Max_I_w); tau_yaw_fb = P + I[k];"
+    },
+    {
+      "id": "node_yaw_wrench_summer",
+      "subsystem_id": "subsystem_3_yaw_modal_channel",
+      "name": "Yaw Wrench Summing Junction",
+      "type": "summer",
+      "description": "Sums physical feedforward torque and closed-loop feedback torque to form the total generalized yaw moment.",
+      "inputs": [
+        { "port": "in_iner_ff", "units": "Nm", "data_type": "float32" },
+        { "port": "in_scrub_ff", "units": "Nm", "data_type": "float32" },
+        { "port": "in_fb", "units": "Nm", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "tau_yaw", "units": "Nm", "data_type": "float32", "description": "Total generalized yaw moment" }
+      ],
+      "equations": "tau_yaw = in_iner_ff + in_scrub_ff + in_fb"
+    },
+    {
+      "id": "node_kinetic_mixer_matrix",
+      "subsystem_id": "subsystem_4_algebraic_kinetic_mixer",
+      "name": "Algebraic Kinetic Mixer Matrix",
+      "type": "mimo_coordinate_transform",
+      "description": "Evaluates the transposed differential drive Jacobian J^T * W to allocate forces to left and right wheel axle torques.",
+      "inputs": [
+        { "port": "F_linear", "units": "N", "data_type": "float32", "description": "Total longitudinal driving force" },
+        { "port": "tau_yaw", "units": "Nm", "data_type": "float32", "description": "Total yaw turning moment" }
+      ],
+      "outputs": [
+        { "port": "tau_L", "units": "Nm", "data_type": "float32", "description": "Left wheel axle shaft torque" },
+        { "port": "tau_R", "units": "Nm", "data_type": "float32", "description": "Right wheel axle shaft torque" }
+      ],
+      "equations": "tau_common = 0.5 * r * F_linear; delta_tau = (r / b) * tau_yaw; tau_L = tau_common - delta_tau; tau_R = tau_common + delta_tau;"
+    },
+    {
+      "id": "node_torque_to_iq_left",
+      "subsystem_id": "subsystem_5_foc_actuator_interface",
+      "name": "Left Motor Torque to Current Converter",
+      "type": "gain",
+      "description": "Divides wheel torque by gearbox ratio and torque constant Kt to determine motor rotor Iq current in Amperes.",
+      "inputs": [
+        { "port": "tau_L", "units": "Nm", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "Iq_L_amp", "units": "A", "data_type": "float32", "description": "Target quadrature axis current for Motor 1" }
+      ],
+      "equations": "Iq_L_amp = tau_L / (Kt * N_gear)"
+    },
+    {
+      "id": "node_torque_to_iq_right",
+      "subsystem_id": "subsystem_5_foc_actuator_interface",
+      "name": "Right Motor Torque to Current Converter",
+      "type": "gain",
+      "description": "Divides wheel torque by gearbox ratio and torque constant Kt to determine motor rotor Iq current in Amperes.",
+      "inputs": [
+        { "port": "tau_R", "units": "Nm", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "Iq_R_amp", "units": "A", "data_type": "float32", "description": "Target quadrature axis current for Motor 2" }
+      ],
+      "equations": "Iq_R_amp = tau_R / (Kt * N_gear)"
+    },
+    {
+      "id": "node_iq_to_digit_left",
+      "subsystem_id": "subsystem_5_foc_actuator_interface",
+      "name": "Left Current to ST Digit Scaler",
+      "type": "scaler_and_clamper",
+      "description": "Converts current in Amperes to ST MCSDK 16-bit register counts (-32767 to +32767).",
+      "inputs": [
+        { "port": "Iq_L_amp", "units": "A", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "digit_L", "units": "counts", "data_type": "int16", "description": "Signed 16-bit Iq reference for ST MCSDK" }
+      ],
+      "equations": "digit_L = clamp((int16_t)(Iq_L_amp * 1866.0f), -32767, 32767)"
+    },
+    {
+      "id": "node_iq_to_digit_right",
+      "subsystem_id": "subsystem_5_foc_actuator_interface",
+      "name": "Right Current to ST Digit Scaler",
+      "type": "scaler_and_clamper",
+      "description": "Converts current in Amperes to ST MCSDK 16-bit register counts (-32767 to +32767).",
+      "inputs": [
+        { "port": "Iq_R_amp", "units": "A", "data_type": "float32" }
+      ],
+      "outputs": [
+        { "port": "digit_R", "units": "counts", "data_type": "int16", "description": "Signed 16-bit Iq reference for ST MCSDK" }
+      ],
+      "equations": "digit_R = clamp((int16_t)(Iq_R_amp * 1866.0f), -32767, 32767)"
+    },
+    {
+      "id": "node_st_mcsdk_hardware_call",
+      "subsystem_id": "subsystem_5_foc_actuator_interface",
+      "name": "ST MCSDK Torque Command Invocation",
+      "type": "hardware_driver_api",
+      "description": "Writes directly to ST MCSDK torque ramp registers with duration=0 for zero-latency torque injection.",
+      "inputs": [
+        { "port": "digit_L", "units": "counts", "data_type": "int16" },
+        { "port": "digit_R", "units": "counts", "data_type": "int16" }
+      ],
+      "outputs": [
+        { "port": "pwm_L", "units": "duty_cycle", "data_type": "hardware", "description": "3-phase PWM gate signals to Motor 1 inverter" },
+        { "port": "pwm_R", "units": "duty_cycle", "data_type": "hardware", "description": "3-phase PWM gate signals to Motor 2 inverter" }
+      ],
+      "equations": "MC_ProgramTorqueRampMotor1(digit_L, 0); MC_ProgramTorqueRampMotor2(digit_R, 0);"
+    },
+    {
+      "id": "node_physical_robot_plant",
+      "subsystem_id": "subsystem_6_physical_robot_plant",
+      "name": "Physical Robot Chassis & Powertrain",
+      "type": "physical_plant",
+      "description": "Continuous-time physical multi-body robot dynamics acting on the ground plane under rolling resistance and external terrain disturbances.",
+      "inputs": [
+        { "port": "pwm_L", "units": "hardware", "data_type": "hardware" },
+        { "port": "pwm_R", "units": "hardware", "data_type": "hardware" },
+        { "port": "F_dist", "units": "N", "data_type": "disturbance", "description": "External longitudinal disturbance (carpet, slope, headwind)" },
+        { "port": "tau_dist", "units": "Nm", "data_type": "disturbance", "description": "External yaw disturbance (caster scrub, asymmetric floor drag)" }
+      ],
+      "outputs": [
+        { "port": "actual_chassis_v", "units": "m/s", "data_type": "physical_state", "description": "True physical longitudinal velocity" },
+        { "port": "actual_chassis_omega", "units": "rad/s", "data_type": "physical_state", "description": "True physical yaw angular rate" },
+        { "port": "actual_wheel_theta_L", "units": "rad", "data_type": "physical_state", "description": "Physical rotor angle Motor 1" },
+        { "port": "actual_wheel_theta_R", "units": "rad", "data_type": "physical_state", "description": "Physical rotor angle Motor 2" }
+      ],
+      "equations": "M_eff * (dv/dt) + Cv*v = F_linear_drive - F_dist; I_eff * (domega/dt) + Cw*omega = tau_yaw_drive - tau_dist;"
+    },
+    {
+      "id": "node_wheel_odometry_observer",
+      "subsystem_id": "subsystem_7_feedback_sensor_observers",
+      "name": "Wheel Odometry Observer",
+      "type": "sensor_observer",
+      "description": "Samples 4096-PPR optical quadrature encoders at 100 Hz to compute actual linear velocity.",
+      "inputs": [
+        { "port": "actual_wheel_theta_L", "units": "rad", "data_type": "physical_state" },
+        { "port": "actual_wheel_theta_R", "units": "rad", "data_type": "physical_state" }
+      ],
+      "outputs": [
+        { "port": "v_odom", "units": "m/s", "data_type": "float32", "description": "Observed longitudinal wheel speed" }
+      ],
+      "equations": "v_L = (delta_theta_L / dt) * r; v_R = (delta_theta_R / dt) * r; v_odom = 0.5 * (v_L + v_R);"
+    },
+    {
+      "id": "node_imu_gyro_observer",
+      "subsystem_id": "subsystem_7_feedback_sensor_observers",
+      "name": "IMU Z-Gyro Observer",
+      "type": "sensor_observer",
+      "description": "Reads ST LSM6DSOX 6-axis IMU over SPI1 (mcb.inav) at 104 Hz to measure true inertial yaw rate in space.",
+      "inputs": [
+        { "port": "actual_chassis_omega", "units": "rad/s", "data_type": "physical_state" }
+      ],
+      "outputs": [
+        { "port": "omega_gyro", "units": "rad/s", "data_type": "float32", "description": "Observed inertial yaw rate (bias compensated)" }
+      ],
+      "equations": "omega_gyro = (raw_gyro_z - bias_z) * scale_factor * (PI / 180.0f);"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_01_v_cmd_to_rate_limiter",
+      "from_node": "node_ros_cmd_vel_input",
+      "from_port": "v_cmd",
+      "to_node": "node_linear_rate_limiter",
+      "to_port": "v_cmd",
+      "signal_name": "Commanded Forward Speed",
+      "units": "m/s",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_02_omega_cmd_to_rate_limiter",
+      "from_node": "node_ros_cmd_vel_input",
+      "from_port": "omega_cmd",
+      "to_node": "node_yaw_rate_limiter",
+      "to_port": "omega_cmd",
+      "signal_name": "Commanded Yaw Turn Rate",
+      "units": "rad/s",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_03_a_des_to_lin_iner_ff",
+      "from_node": "node_linear_rate_limiter",
+      "from_port": "a_des",
+      "to_node": "node_longitudinal_feedforward_inertia",
+      "to_port": "a_des",
+      "signal_name": "Reference Linear Acceleration",
+      "units": "m/s^2",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_04_v_des_to_strib_ff",
+      "from_node": "node_linear_rate_limiter",
+      "from_port": "v_des",
+      "to_node": "node_longitudinal_feedforward_friction",
+      "to_port": "v_des",
+      "signal_name": "Reference Linear Velocity",
+      "units": "m/s",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_05_v_des_to_error_subtractor",
+      "from_node": "node_linear_rate_limiter",
+      "from_port": "v_des",
+      "to_node": "node_longitudinal_error_subtractor",
+      "to_port": "in_reference",
+      "signal_name": "Reference Speed (+ Port)",
+      "units": "m/s",
+      "operator": "+"
+    },
+    {
+      "id": "edge_06_v_odom_to_error_subtractor",
+      "from_node": "node_wheel_odometry_observer",
+      "from_port": "v_odom",
+      "to_node": "node_longitudinal_error_subtractor",
+      "to_port": "in_feedback",
+      "signal_name": "Measured Odometry Speed (- Port)",
+      "units": "m/s",
+      "operator": "-"
+    },
+    {
+      "id": "edge_07_e_v_to_pi_controller",
+      "from_node": "node_longitudinal_error_subtractor",
+      "from_port": "e_v",
+      "to_node": "node_longitudinal_pi_controller",
+      "to_port": "e_v",
+      "signal_name": "Speed Tracking Error",
+      "units": "m/s",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_08_iner_ff_to_lin_summer",
+      "from_node": "node_longitudinal_feedforward_inertia",
+      "from_port": "F_iner_ff",
+      "to_node": "node_longitudinal_wrench_summer",
+      "to_port": "in_iner_ff",
+      "signal_name": "Inertial Force (M_eff * a)",
+      "units": "N",
+      "operator": "+"
+    },
+    {
+      "id": "edge_09_strib_ff_to_lin_summer",
+      "from_node": "node_longitudinal_feedforward_friction",
+      "from_port": "F_strib_ff",
+      "to_node": "node_longitudinal_wrench_summer",
+      "to_port": "in_strib_ff",
+      "signal_name": "Stribeck Friction Force",
+      "units": "N",
+      "operator": "+"
+    },
+    {
+      "id": "edge_10_lin_fb_to_lin_summer",
+      "from_node": "node_longitudinal_pi_controller",
+      "from_port": "F_lin_fb",
+      "to_node": "node_longitudinal_wrench_summer",
+      "to_port": "in_fb",
+      "signal_name": "Closed-Loop Feedback Force (Governor)",
+      "units": "N",
+      "operator": "+"
+    },
+    {
+      "id": "edge_11_alpha_des_to_yaw_iner_ff",
+      "from_node": "node_yaw_rate_limiter",
+      "from_port": "alpha_des",
+      "to_node": "node_yaw_feedforward_inertia",
+      "to_port": "alpha_des",
+      "signal_name": "Reference Angular Acceleration",
+      "units": "rad/s^2",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_12_omega_des_to_scrub_ff",
+      "from_node": "node_yaw_rate_limiter",
+      "from_port": "omega_des",
+      "to_node": "node_yaw_feedforward_scrub",
+      "to_port": "omega_des",
+      "signal_name": "Reference Angular Rate",
+      "units": "rad/s",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_13_omega_des_to_yaw_subtractor",
+      "from_node": "node_yaw_rate_limiter",
+      "from_port": "omega_des",
+      "to_node": "node_yaw_error_subtractor",
+      "to_port": "in_reference",
+      "signal_name": "Reference Yaw Rate (+ Port)",
+      "units": "rad/s",
+      "operator": "+"
+    },
+    {
+      "id": "edge_14_omega_gyro_to_yaw_subtractor",
+      "from_node": "node_imu_gyro_observer",
+      "from_port": "omega_gyro",
+      "to_node": "node_yaw_error_subtractor",
+      "to_port": "in_feedback",
+      "signal_name": "Measured IMU Gyro Rate (- Port)",
+      "units": "rad/s",
+      "operator": "-"
+    },
+    {
+      "id": "edge_15_e_omega_to_yaw_pi",
+      "from_node": "node_yaw_error_subtractor",
+      "from_port": "e_omega",
+      "to_node": "node_yaw_pi_controller",
+      "to_port": "e_omega",
+      "signal_name": "Yaw Angular Rate Error",
+      "units": "rad/s",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_16_yaw_iner_ff_to_yaw_summer",
+      "from_node": "node_yaw_feedforward_inertia",
+      "from_port": "tau_iner_ff",
+      "to_node": "node_yaw_wrench_summer",
+      "to_port": "in_iner_ff",
+      "signal_name": "Yaw Inertial Moment (I_eff * alpha)",
+      "units": "Nm",
+      "operator": "+"
+    },
+    {
+      "id": "edge_17_scrub_ff_to_yaw_summer",
+      "from_node": "node_yaw_feedforward_scrub",
+      "from_port": "tau_scrub_ff",
+      "to_node": "node_yaw_wrench_summer",
+      "to_port": "in_scrub_ff",
+      "signal_name": "Tire Scrub Moment",
+      "units": "Nm",
+      "operator": "+"
+    },
+    {
+      "id": "edge_18_yaw_fb_to_yaw_summer",
+      "from_node": "node_yaw_pi_controller",
+      "from_port": "tau_yaw_fb",
+      "to_node": "node_yaw_wrench_summer",
+      "to_port": "in_fb",
+      "signal_name": "Closed-Loop Yaw Torque (Governor)",
+      "units": "Nm",
+      "operator": "+"
+    },
+    {
+      "id": "edge_19_F_linear_to_mixer",
+      "from_node": "node_longitudinal_wrench_summer",
+      "from_port": "F_linear",
+      "to_node": "node_kinetic_mixer_matrix",
+      "to_port": "F_linear",
+      "signal_name": "Total Generalized Longitudinal Force",
+      "units": "N",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_20_tau_yaw_to_mixer",
+      "from_node": "node_yaw_wrench_summer",
+      "from_port": "tau_yaw",
+      "to_node": "node_kinetic_mixer_matrix",
+      "to_port": "tau_yaw",
+      "signal_name": "Total Generalized Yaw Moment",
+      "units": "Nm",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_21_tau_L_to_iq_converter",
+      "from_node": "node_kinetic_mixer_matrix",
+      "from_port": "tau_L",
+      "to_node": "node_torque_to_iq_left",
+      "to_port": "tau_L",
+      "signal_name": "Left Wheel Axle Torque",
+      "units": "Nm",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_22_tau_R_to_iq_converter",
+      "from_node": "node_kinetic_mixer_matrix",
+      "from_port": "tau_R",
+      "to_node": "node_torque_to_iq_right",
+      "to_port": "tau_R",
+      "signal_name": "Right Wheel Axle Torque",
+      "units": "Nm",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_23_iq_L_amp_to_digit",
+      "from_node": "node_torque_to_iq_left",
+      "from_port": "Iq_L_amp",
+      "to_node": "node_iq_to_digit_left",
+      "to_port": "Iq_L_amp",
+      "signal_name": "Left Quadrature Current",
+      "units": "A",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_24_iq_R_amp_to_digit",
+      "from_node": "node_torque_to_iq_right",
+      "from_port": "Iq_R_amp",
+      "to_node": "node_iq_to_digit_right",
+      "to_port": "Iq_R_amp",
+      "signal_name": "Right Quadrature Current",
+      "units": "A",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_25_digit_L_to_mcsdk_call",
+      "from_node": "node_iq_to_digit_left",
+      "from_port": "digit_L",
+      "to_node": "node_st_mcsdk_hardware_call",
+      "to_port": "digit_L",
+      "signal_name": "Motor 1 Signed 16-bit Count",
+      "units": "counts",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_26_digit_R_to_mcsdk_call",
+      "from_node": "node_iq_to_digit_right",
+      "from_port": "digit_R",
+      "to_node": "node_st_mcsdk_hardware_call",
+      "to_port": "digit_R",
+      "signal_name": "Motor 2 Signed 16-bit Count",
+      "units": "counts",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_27_mcsdk_to_plant_pwm_L",
+      "from_node": "node_st_mcsdk_hardware_call",
+      "from_port": "pwm_L",
+      "to_node": "node_physical_robot_plant",
+      "to_port": "pwm_L",
+      "signal_name": "Inverter Phase Voltages Motor 1",
+      "units": "V",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_28_mcsdk_to_plant_pwm_R",
+      "from_node": "node_st_mcsdk_hardware_call",
+      "from_port": "pwm_R",
+      "to_node": "node_physical_robot_plant",
+      "to_port": "pwm_R",
+      "signal_name": "Inverter Phase Voltages Motor 2",
+      "units": "V",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_29_plant_to_odometry_L",
+      "from_node": "node_physical_robot_plant",
+      "from_port": "actual_wheel_theta_L",
+      "to_node": "node_wheel_odometry_observer",
+      "to_port": "actual_wheel_theta_L",
+      "signal_name": "Rotor 1 Rotation",
+      "units": "rad",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_30_plant_to_odometry_R",
+      "from_node": "node_physical_robot_plant",
+      "from_port": "actual_wheel_theta_R",
+      "to_node": "node_wheel_odometry_observer",
+      "to_port": "actual_wheel_theta_R",
+      "signal_name": "Rotor 2 Rotation",
+      "units": "rad",
+      "operator": "direct"
+    },
+    {
+      "id": "edge_31_plant_to_imu",
+      "from_node": "node_physical_robot_plant",
+      "from_port": "actual_chassis_omega",
+      "to_node": "node_imu_gyro_observer",
+      "to_port": "actual_chassis_omega",
+      "signal_name": "True Spatial Yaw Rate",
+      "units": "rad/s",
+      "operator": "direct"
+    }
+  ]
+}

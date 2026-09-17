@@ -38,7 +38,13 @@ This documentation captures the first-principles mathematics, multi-body physica
 * **Method 3 (Accelerometer Disparity):** Cross-checking wheel linear acceleration against IMU $X$-axis accelerometer.
 * **Active Traction Control (TCS):** Torque clamping, odometry protection, and stall watchdogs.
 
+### [Document 06: Formal Control System Graph Specification (JSON)](06_CONTROL_SYSTEM_GRAPH_SPECIFICATION.json)
+* **Unambiguous Topological JSON Graph:** 7 subsystems, 20 functional nodes, and 31 explicit directed edges.
+* **Exact Mathematical Port Formulations:** Defines every input/output port, physical engineering units, and transfer equations.
+* **Explicit Feedback Error Subtraction:** Mathematically defines the exact nodes where measured wheel odometry ($v_{\text{odom}}$) and IMU gyro ($\omega_{\text{gyro}}$) subtract from desired reference states.
+
 ---
+
 
 ## The Master Architecture Flow
 
