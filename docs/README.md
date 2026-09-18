@@ -67,8 +67,18 @@ This documentation captures the first-principles mathematics, multi-body physica
 * **Deconstructing `Duration = 0`:** Demystifying the modality switch between canned S-curve point-to-point moves and real-time follow mode in ST MCSDK.
 * **Finite Viscous Impedance vs. Infinite Rigidity:** Mathematical transfer function proofs showing why $Z(s) = B_d + K_i/s$ outperforms rigid $Z(s) \to \infty$ on rough farm terrain.
 
+### [Document 11: Decoupled 2-DoF Force-Velocity Impedance Control Topology](11_FORCE_VELOCITY_IMPEDANCE_CONTROL_TOPOLOGY.md)
+* **The 8-Stage Architecture:** Detailed breakdown of online reference generation, longitudinal/yaw modal channels, kinetic mixer, and FOC injection.
+* **Topological Summing Elements:** Mathematical and structural analysis of $\Sigma_v, \Sigma_\omega, \Sigma_F, \Sigma_\tau, \Sigma_L, \Sigma_R, \Sigma_{Iq}, \Sigma_{Id}$.
+* **Port Impedance Proof:** Formal proof of strictly passive interaction dynamics ($Z(s) = B_d + K_i/s$).
+* **Intrinsic Slip Governance:** Instant reverse dynamic braking under traction loss without heuristic slip detectors.
+
 ### [Visual Control Diagrams & Flowcharts](control_diagrams/README.md)
-* **[control_path.svg](control_diagrams/control_path.svg):** Scalable vector graphic tracing the complete path from ROS 2 (`move_smooth`, `clothoid_trajectory_executor`, `teleop_twist_keyboard`) over `UART_serial` to motor FOC.
+* **[velocity_impedance_control_system.svg](control_diagrams/velocity_impedance_control_system.svg):** Deep architectural diagram of the Decoupled 2-DoF Velocity Impedance Control System with summing junctions and loops.
+* **[velocity_impedance_control_system.png](control_diagrams/velocity_impedance_control_system.png):** High-resolution raster rendering for instant inspection.
+* **[velocity_impedance_control_system.mmd](control_diagrams/velocity_impedance_control_system.mmd):** Editable Mermaid source for [mermaid.live](https://mermaid.live).
+* **[velocity_impedance_control_system.dot](control_diagrams/velocity_impedance_control_system.dot):** Source Graphviz definition with transfer functions and feedback channels.
+* **[control_path.svg](control_diagrams/control_path.svg):** Scalable vector graphic tracing the full stack from ROS 2 (`move_smooth`, `clothoid_trajectory_executor`, `teleop_twist_keyboard`) over `UART_serial` to motor FOC.
 * **[control_path.png](control_diagrams/control_path.png):** High-resolution raster rendering for instant documentation preview.
 * **[control_path.mmd](control_diagrams/control_path.mmd):** Standalone Mermaid definition for online editing at [mermaid.live](https://mermaid.live).
 * **[control_path.dot](control_diagrams/control_path.dot):** Source Graphviz definition with color-coded multi-rate execution layers.

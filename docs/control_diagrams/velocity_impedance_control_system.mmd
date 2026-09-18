@@ -1,0 +1,169 @@
+%% =========================================================================
+%% Decoupled 2-DoF Velocity Impedance Control System Architecture
+%% Ubiquity Robotics Magni MCB G6 Firmware Stack
+%% Editable online at: https://mermaid.live
+%% =========================================================================
+
+flowchart TD
+    %% ==========================================
+    %% STAGE 1: HIGH-LEVEL AUTONOMY (SBC)
+    %% ==========================================
+    subgraph S1 ["Stage 1: High-Level Autonomy (SBC: Jetson / NUC) [20 - 50 Hz]"]
+        direction TB
+        CmdSource["Trajectory / Teleop Source:\n• move_smooth (Velocity profiling)\n• clothoid_trajectory_executor (C2D clothoids)\n• teleop_twist_keyboard (Manual teleop)"]
+        CmdPayload["Command Message (/cmd_vel):\n• v_cmd (linear_speed_mm_s) [m/s]\n• w_cmd (rotational_speed_mrad_s) [rad/s]"]
+        UartRx["UART_serial Interface (drive.c:311)\nHardware UART RX DMA buffer\nTimeout Watchdog (valid_ms <= 300 ms)"]
+
+        CmdSource -->|"Publishes"| CmdPayload
+        CmdPayload -->|"UART_serial stream"| UartRx
+    end
+
+    %% ==========================================
+    %% STAGE 2: ONLINE REFERENCE TRAJECTORY GENERATOR
+    %% ==========================================
+    subgraph S2 ["Stage 2: Online Reference Trajectory Generator (drive_2dof.c:93-106) [1 kHz]"]
+        direction TB
+        RefLin["Longitudinal Acceleration Limiter:\ndv = v_cmd - v_des\na_des = clamp(dv/dt, -max_decel, +max_accel)\nv_des += a_des · dt"]
+        RefRot["Yaw Angular Acceleration Limiter:\ndw = w_cmd - w_des\nalpha_des = clamp(dw/dt, -max_rot_accel, +max_rot_accel)\nw_des += alpha_des · dt"]
+    end
+
+    UartRx -->|"v_cmd"| RefLin
+    UartRx -->|"w_cmd"| RefRot
+
+    %% ==========================================
+    %% STAGE 3A: LONGITUDINAL MODAL CHANNEL
+    %% ==========================================
+    subgraph S3A ["Stage 3A: Longitudinal Channel (Force Domain) [drive_2dof.c:108-140]"]
+        direction TB
+        F_iner_ff["Linear Inertia Feedforward:\nF_iner_ff = M_eff · a_des\n(Muscle at t=0, M_eff = 1.10·M)"]
+        F_strib_ff["C1-Smooth Breakaway Stiction:\nF_strib_ff = (tau_stict/r)·tanh(a/0.15)·gate\n(Active only accelerating from rest)"]
+        F_visc_ff["Viscous Drag Compensation:\nF_viscous = B_viscous · v_des\n(Gearbox grease shearing resistance)"]
+
+        Sum_v(("Σ_v\n[e_v]"))
+        F_damper["Virtual Viscous Damper (kp_v):\nF_damper = B_d · e_v\n[Unit: N/(m/s) ≡ N·s/m]"]
+        F_trim["Disturbance Trimmer (ki_v):\nF_trim = K_i · ∫e_v dt\n(Clamped: |integ| <= max_i_linear/ki_v)"]
+
+        Sum_F_total["Σ_F: Longitudinal Total Force\nF_linear_total = F_iner_ff + F_strib_ff + F_viscous + F_damper + F_trim"]
+
+        Sum_v -->|"e_v = v_des - v_odom"| F_damper
+        Sum_v -->|"e_v = v_des - v_odom"| F_trim
+        F_iner_ff --> Sum_F_total
+        F_strib_ff --> Sum_F_total
+        F_visc_ff --> Sum_F_total
+        F_damper --> Sum_F_total
+        F_trim --> Sum_F_total
+    end
+
+    RefLin -->|"a_des"| F_iner_ff
+    RefLin -->|"a_des, v_des"| F_strib_ff
+    RefLin -->|"v_des"| F_visc_ff
+    RefLin -->|"v_des (+)"| Sum_v
+
+    %% ==========================================
+    %% STAGE 3B: YAW MODAL CHANNEL
+    %% ==========================================
+    subgraph S3B ["Stage 3B: Yaw Channel (Torque Domain) [drive_2dof.c:142-166]"]
+        direction TB
+        Tau_iner_ff["Rotational Inertia Feedforward:\ntau_iner_ff = I_eff · alpha_des\n(I_eff = 0.5·M_eff·(b/2)^2)"]
+        Tau_scrub_ff["C1-Smooth Tire Scrub Friction:\ntau_scrub_ff = tau_scrub · tanh(w_des/0.04)\n(Smooth lateral tire scrub during pivot)"]
+
+        Sum_w(("Σ_w\n[e_w]"))
+        Tau_damper["Rotational Viscous Damper (kp_w):\ntau_damper = B_dw · e_w\n[Unit: Nm/(rad/s)]"]
+        Tau_trim["Yaw Disturbance Trimmer (ki_w):\ntau_trim = K_iw · ∫e_w dt\n(Clamped: |integ| <= max_i_yaw/ki_w)"]
+
+        Sum_Tau_total["Σ_τ: Total Yaw Moment\ntau_yaw_total = tau_iner_ff + tau_scrub_ff + tau_damper + tau_trim"]
+
+        Sum_w -->|"e_w = w_des - w_gyro"| Tau_damper
+        Sum_w -->|"e_w = w_des - w_gyro"| Tau_trim
+        Tau_iner_ff --> Sum_Tau_total
+        Tau_scrub_ff --> Sum_Tau_total
+        Tau_damper --> Sum_Tau_total
+        Tau_trim --> Sum_Tau_total
+    end
+
+    RefRot -->|"alpha_des"| Tau_iner_ff
+    RefRot -->|"w_des"| Tau_scrub_ff
+    RefRot -->|"w_des (+)"| Sum_w
+
+    %% ==========================================
+    %% STAGE 4: ALGEBRAIC KINETIC MIXER (τ = J^T · W)
+    %% ==========================================
+    subgraph S4 ["Stage 4: Algebraic Kinetic Mixer Matrix [drive_2dof.c:168-178]"]
+        direction TB
+        MixerCommon["Common Axle Torque Component:\ntau_common = 0.5 · r · F_linear_total\n(Propels chassis center of mass)"]
+        MixerDiff["Differential Steering Couple:\ndelta_tau = (r / b) · tau_yaw_total\n(Direct Yaw Moment DYC couple)"]
+
+        Sum_tau_L["Σ_L: Left Axle Torque\ntau_wheel_left = tau_common - delta_tau"]
+        Sum_tau_R["Σ_R: Right Axle Torque\ntau_wheel_right = tau_common + delta_tau"]
+
+        MixerCommon --> Sum_tau_L
+        MixerCommon --> Sum_tau_R
+        MixerDiff -->|"- delta_tau"| Sum_tau_L
+        MixerDiff -->|"+ delta_tau"| Sum_tau_R
+    end
+
+    Sum_F_total -->|"F_linear_total"| MixerCommon
+    Sum_Tau_total -->|"tau_yaw_total"| MixerDiff
+
+    %% ==========================================
+    %% STAGE 5: FOC CURRENT CONVERSION & INJECTION
+    %% ==========================================
+    subgraph S5 ["Stage 5: FOC Actuator Current Mapping & MCSDK Injection [drive_2dof.c:180-207]"]
+        direction TB
+        FocMapping["Actuator Scaling & Polarity:\nIq_L = (tau_L / Kt) · lw_dir\nIq_R = (tau_R / Kt) · rw_dir\ndigit = clamp(Iq · 198.8, -32767, +32767)"]
+        FocInjection["Zero-Latency MCSDK Injection (Line 205-206):\nMC_ProgramTorqueRampMotor1(digit_m1, Duration = 0)\nMC_ProgramTorqueRampMotor2(digit_m2, Duration = 0)\n(Duration 0 = Instant register write to FOC Iq bus)"]
+
+        FocMapping --> FocInjection
+    end
+
+    Sum_tau_L -->|"tau_L"| FocMapping
+    Sum_tau_R -->|"tau_R"| FocMapping
+
+    %% ==========================================
+    %% STAGE 6: ULTRA-FAST FOC CURRENT REGULATORS (16-20 kHz)
+    %% ==========================================
+    subgraph S6 ["Stage 6: Ultra-Fast FOC Interrupts (STM32G4 Timer ISR) [16 - 20 kHz]"]
+        direction TB
+        CurrentLoop["Quadrature Current PI Loops:\ne_Iq = Iq_ref - Iq_meas\nVq = Kp_i·e_Iq + Ki_i·∫e_Iq dt + Back_EMF"]
+        SvpwmBlock["Inverse Park & Space Vector PWM:\n(Vd=0, Vq, θ_e) ──► SVPWM\nDuty Cycles (Ta, Tb, Tc) for 6 MOSFET Gates"]
+
+        CurrentLoop --> SvpwmBlock
+    end
+
+    FocInjection -->|"Iq* target bus"| CurrentLoop
+
+    %% ==========================================
+    %% STAGE 7: PHYSICAL PLANT DYNAMICS & ENVIRONMENT
+    %% ==========================================
+    subgraph S7 ["Stage 7: Physical Plant Dynamics & Environment (Continuous Nature)"]
+        direction TB
+        Inverter["3-Phase Inverter Bridge (48V DC Bus)\nSwitches at 16-20 kHz onto stator coils"]
+        Electromag["Lorentz Force Electromechanics:\ntau_act_L = Kt · Iq_L\ntau_act_R = Kt · Iq_R"]
+        ChassisPhysics["Chassis 3-Body Dynamics:\nM_eff · dv/dt = (tau_L + tau_R)/r - F_resist - M·g·sin(θ_pitch)\nI_eff · dw/dt = (b/2r)·(tau_R - tau_L) - tau_scrub"]
+        Integrators["Continuous Acceleration Integrations:\nv_robot = ∫ (dv/dt) dt\nw_robot = ∫ (dw/dt) dt"]
+
+        Inverter --> Electromag
+        Electromag --> ChassisPhysics
+        ChassisPhysics --> Integrators
+    end
+
+    SvpwmBlock -->|"Gate PWM pulses"| Inverter
+
+    %% ==========================================
+    %% STAGE 8: SENSOR TELEMETRY & FEEDBACK CHANNELS
+    %% ==========================================
+    subgraph S8 ["Stage 8: Sensor Telemetry & Feedback Conversion"]
+        direction TB
+        Encoder["Wheel Encoders & Odometry (1 kHz):\nReads shaft quadrature counts\nodom_v = (dL + dR) / (2 · dt)"]
+        ImuGyro["Onboard 6-Axis IMU Gyroscope (1 kHz):\nReads true spatial yaw rotation rate\nw_gyro = IMU_Z_rate_rad_s (mcb.inav.ahrs)"]
+        CurrentShunts["Phase Shunt Resistors & ADC (16-20 kHz):\nSamples phase currents Ia, Ib\nCalculates real Iq_meas via Clarke/Park"]
+    end
+
+    Integrators -.->|"Wheel rotations"| Encoder
+    Integrators -.->|"Chassis angular motion"| ImuGyro
+    Inverter -.->|"Phase currents"| CurrentShunts
+
+    %% Close Feedback Loops
+    Encoder -.->|"odom_v_m_s (-)"| Sum_v
+    ImuGyro -.->|"gyro_w_rad_s (-)"| Sum_w
+    CurrentShunts -.->|"Iq_meas (-)"| CurrentLoop

@@ -1,0 +1,224 @@
+digraph VelocityImpedanceControlSystem {
+    graph [rankdir=TB, splines=true, nodesep=0.7, ranksep=0.75, fontname="Helvetica", fontsize=12, pad="0.5"];
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, margin="0.2,0.15"];
+    edge [fontname="Helvetica", fontsize=10, penwidth=1.6];
+
+    // ====================================================
+    // STAGE 1: HIGH-LEVEL SBC AUTONOMY
+    // ====================================================
+    subgraph cluster_stage1 {
+        label = "Stage 1: High-Level Autonomy (SBC: Jetson / NUC) [20 - 50 Hz]";
+        style = "rounded,filled";
+        fillcolor = "#E1F5FE";
+        color = "#0288D1";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        cmd_node [label="Trajectory / Teleop Source:\n• move_smooth (Velocity profiling)\n• clothoid_trajectory_executor (C2D clothoids)\n• teleop_twist_keyboard (Manual teleop)", fillcolor="#FFFFFF", color="#0288D1"];
+        cmd_payload [label="Command Message (/cmd_vel):\n• v_cmd (linear_speed_mm_s) [m/s]\n• w_cmd (rotational_speed_mrad_s) [rad/s]", fillcolor="#FFFFFF", color="#0288D1"];
+        uart_rx [label="UART_serial Interface (drive.c:311)\nHardware UART RX DMA buffer\nTimeout Watchdog (valid_ms <= 300 ms)", fillcolor="#FFFFFF", color="#0288D1"];
+
+        cmd_node -> cmd_payload [label=" Publishes"];
+        cmd_payload -> uart_rx [label=" UART_serial stream"];
+    }
+
+    // ====================================================
+    // STAGE 2: ONLINE REFERENCE GENERATOR (1 kHz)
+    // ====================================================
+    subgraph cluster_stage2 {
+        label = "Stage 2: Online Reference Trajectory Generator (drive_2dof.c:93-106) [1 kHz]";
+        style = "rounded,filled";
+        fillcolor = "#E0F2F1";
+        color = "#00897B";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        ref_lin [label="Longitudinal Acceleration Limiter:\ndv = v_cmd - v_des\na_des = clamp(dv/dt, -max_decel, +max_accel)\nv_des += a_des · dt", fillcolor="#FFFFFF", color="#00897B"];
+        ref_rot [label="Yaw Angular Acceleration Limiter:\ndw = w_cmd - w_des\nalpha_des = clamp(dw/dt, -max_rot_accel, +max_rot_accel)\nw_des += alpha_des · dt", fillcolor="#FFFFFF", color="#00897B"];
+    }
+
+    uart_rx -> ref_lin [label=" v_cmd"];
+    uart_rx -> ref_rot [label=" w_cmd"];
+
+    // ====================================================
+    // STAGE 3A: LONGITUDINAL MODAL CHANNEL
+    // ====================================================
+    subgraph cluster_stage3a {
+        label = "Stage 3A: Longitudinal Channel (Force Domain) [drive_2dof.c:108-140]";
+        style = "rounded,filled";
+        fillcolor = "#FFFDE7";
+        color = "#FBC02D";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        f_iner_ff [label="Linear Inertia Feedforward:\nF_iner_ff = M_eff · a_des\n(Muscle at t=0, M_eff = 1.10·M)", fillcolor="#FFF9C4", color="#FBC02D"];
+        f_strib_ff [label="C1-Smooth Breakaway Stiction:\nF_strib_ff = (tau_stict/r)·tanh(a/0.15)·gate\n(Active only accelerating from rest)", fillcolor="#FFF9C4", color="#FBC02D"];
+        f_visc_ff [label="Viscous Drag Compensation:\nF_viscous = B_viscous · v_des\n(Gearbox grease shearing resistance)", fillcolor="#FFF9C4", color="#FBC02D"];
+
+        sum_err_v [label="Σ_v: Linear Error\ne_v = v_des - v_odom", shape=circle, fillcolor="#FFCDD2", color="#D32F2F", fontname="Helvetica-Bold"];
+        f_damper_fb [label="Virtual Viscous Damper (kp_v):\nF_damper = B_d · e_v\n[Unit: N/(m/s) ≡ N·s/m]", fillcolor="#FFFFFF", color="#D32F2F"];
+        f_trim_fb [label="Disturbance Trimmer (ki_v):\nF_trim = K_i · ∫e_v dt\n(Clamped: |integ| <= max_i_linear/ki_v)", fillcolor="#FFFFFF", color="#D32F2F"];
+
+        sum_f_total [label="Σ_F: Longitudinal Total Force\nF_linear_total = F_iner_ff + F_strib_ff\n+ F_viscous + F_damper + F_trim", shape=box, style="rounded,filled", fillcolor="#FFF59D", color="#F57F17", penwidth=2.0];
+    }
+
+    ref_lin -> f_iner_ff [label=" a_des"];
+    ref_lin -> f_strib_ff [label=" a_des, v_des"];
+    ref_lin -> f_visc_ff [label=" v_des"];
+    ref_lin -> sum_err_v [label=" v_des (+)"];
+
+    sum_err_v -> f_damper_fb [label=" e_v"];
+    sum_err_v -> f_trim_fb [label=" e_v"];
+
+    f_iner_ff -> sum_f_total;
+    f_strib_ff -> sum_f_total;
+    f_visc_ff -> sum_f_total;
+    f_damper_fb -> sum_f_total;
+    f_trim_fb -> sum_f_total;
+
+    // ====================================================
+    // STAGE 3B: YAW MODAL CHANNEL
+    // ====================================================
+    subgraph cluster_stage3b {
+        label = "Stage 3B: Yaw Channel (Torque Domain) [drive_2dof.c:142-166]";
+        style = "rounded,filled";
+        fillcolor = "#EDE7F6";
+        color = "#7E57C2";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        tau_iner_ff [label="Rotational Inertia Feedforward:\ntau_iner_ff = I_eff · alpha_des\n(I_eff = 0.5·M_eff·(b/2)^2)", fillcolor="#D1C4E9", color="#7E57C2"];
+        tau_scrub_ff [label="C1-Smooth Tire Scrub Friction:\ntau_scrub_ff = tau_scrub · tanh(w_des/0.04)\n(Smooth lateral tire scrub during pivot)", fillcolor="#D1C4E9", color="#7E57C2"];
+
+        sum_err_w [label="Σ_w: Yaw Rate Error\ne_w = w_des - w_gyro", shape=circle, fillcolor="#FFCDD2", color="#D32F2F", fontname="Helvetica-Bold"];
+        tau_damper_fb [label="Rotational Viscous Damper (kp_w):\ntau_damper = B_dw · e_w\n[Unit: Nm/(rad/s)]", fillcolor="#FFFFFF", color="#D32F2F"];
+        tau_trim_fb [label="Yaw Disturbance Trimmer (ki_w):\ntau_trim = K_iw · ∫e_w dt\n(Clamped: |integ| <= max_i_yaw/ki_w)", fillcolor="#FFFFFF", color="#D32F2F"];
+
+        sum_tau_total [label="Σ_τ: Total Yaw Moment\ntau_yaw_total = tau_iner_ff + tau_scrub_ff\n+ tau_damper + tau_trim", shape=box, style="rounded,filled", fillcolor="#B39DDB", color="#512DA8", penwidth=2.0];
+    }
+
+    ref_rot -> tau_iner_ff [label=" alpha_des"];
+    ref_rot -> tau_scrub_ff [label=" w_des"];
+    ref_rot -> sum_err_w [label=" w_des (+)"];
+
+    sum_err_w -> tau_damper_fb [label=" e_w"];
+    sum_err_w -> tau_trim_fb [label=" e_w"];
+
+    tau_iner_ff -> sum_tau_total;
+    tau_scrub_ff -> sum_tau_total;
+    tau_damper_fb -> sum_tau_total;
+    tau_trim_fb -> sum_tau_total;
+
+    // ====================================================
+    // STAGE 4: ALGEBRAIC KINETIC MIXER (τ = J^T · W)
+    // ====================================================
+    subgraph cluster_stage4 {
+        label = "Stage 4: Algebraic Kinetic Mixer Matrix [drive_2dof.c:168-178]";
+        style = "rounded,filled";
+        fillcolor = "#FFF3E0";
+        color = "#FB8C00";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        mixer_common [label="Common Axle Torque Component:\ntau_common = 0.5 · r · F_linear_total\n(Propels chassis center of mass)", fillcolor="#FFE0B2", color="#FB8C00"];
+        mixer_diff [label="Differential Steering Couple:\ndelta_tau = (r / b) · tau_yaw_total\n(Direct Yaw Moment DYC couple)", fillcolor="#FFE0B2", color="#FB8C00"];
+
+        sum_tau_L [label="Σ_L: Left Axle Torque\ntau_wheel_left = tau_common - delta_tau", shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#E65100", fontname="Helvetica-Bold"];
+        sum_tau_R [label="Σ_R: Right Axle Torque\ntau_wheel_right = tau_common + delta_tau", shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#E65100", fontname="Helvetica-Bold"];
+    }
+
+    sum_f_total -> mixer_common [label=" F_linear_total"];
+    sum_tau_total -> mixer_diff [label=" tau_yaw_total"];
+
+    mixer_common -> sum_tau_L;
+    mixer_common -> sum_tau_R;
+    mixer_diff -> sum_tau_L [label=" - delta_tau"];
+    mixer_diff -> sum_tau_R [label=" + delta_tau"];
+
+    // ====================================================
+    // STAGE 5: FOC CURRENT CONVERSION & INJECTION
+    // ====================================================
+    subgraph cluster_stage5 {
+        label = "Stage 5: FOC Actuator Current Mapping & MCSDK Injection [drive_2dof.c:180-207]";
+        style = "rounded,filled";
+        fillcolor = "#F3E5F5";
+        color = "#8E24AA";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        foc_mapping [label="Actuator Scaling & Polarity:\nIq_L = (tau_L / Kt) · lw_dir\nIq_R = (tau_R / Kt) · rw_dir\ndigit = clamp(Iq · 198.8, -32767, +32767)", fillcolor="#FFFFFF", color="#8E24AA"];
+        foc_injection [label="Zero-Latency MCSDK Injection (Line 205-206):\nMC_ProgramTorqueRampMotor1(digit_m1, Duration = 0)\nMC_ProgramTorqueRampMotor2(digit_m2, Duration = 0)\n(Duration 0 = Instant register write to FOC Iq bus)", fillcolor="#E1BEE7", color="#6A1B9A", penwidth=2.0];
+
+        foc_mapping -> foc_injection;
+    }
+
+    sum_tau_L -> foc_mapping [label=" tau_L"];
+    sum_tau_R -> foc_mapping [label=" tau_R"];
+
+    // ====================================================
+    // STAGE 6: ULTRA-FAST FOC CURRENT REGULATORS (16-20 kHz)
+    // ====================================================
+    subgraph cluster_stage6 {
+        label = "Stage 6: Ultra-Fast FOC Interrupts (STM32G4 Timer ISR) [16 - 20 kHz]";
+        style = "rounded,filled";
+        fillcolor = "#EDE7F6";
+        color = "#512DA8";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        foc_current_loop [label="Quadrature Current PI Loops:\ne_Iq_M1 = Iq_ref_M1 - Iq_meas_M1\ne_Iq_M2 = Iq_ref_M2 - Iq_meas_M2\nVq = PI(e_Iq) + Back_EMF", fillcolor="#FFFFFF", color="#512DA8"];
+        svpwm_block [label="Inverse Park & Space Vector PWM:\n(Vd=0, Vq, θ_e) ──► SVPWM\nDuty Cycles (Ta, Tb, Tc) for 6 MOSFET Gates", fillcolor="#FFFFFF", color="#512DA8"];
+
+        foc_current_loop -> svpwm_block;
+    }
+
+    foc_injection -> foc_current_loop [label=" Iq* target bus"];
+
+    // ====================================================
+    // STAGE 7: PHYSICAL ROBOT & ENVIRONMENT DYNAMICS
+    // ====================================================
+    subgraph cluster_stage7 {
+        label = "Stage 7: Physical Plant Dynamics & Environment (Continuous Nature)";
+        style = "rounded,filled";
+        fillcolor = "#ECEFF1";
+        color = "#455A64";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        power_inverter [label="3-Phase Inverter Bridge (48V DC Bus)\nSwitches at 16-20 kHz onto stator coils", fillcolor="#FFFFFF", color="#455A64"];
+        electromag [label="Lorentz Force Electromechanics:\ntau_act_L = Kt · Iq_L\ntau_act_R = Kt · Iq_R", fillcolor="#FFFFFF", color="#455A64"];
+        chassis_physics [label="Chassis 3-Body Dynamics:\nM_eff · dv/dt = (tau_L + tau_R)/r - F_resist - M·g·sin(θ_pitch)\nI_eff · dw/dt = (b/2r)·(tau_R - tau_L) - tau_scrub", fillcolor="#CFD8DC", color="#263238", penwidth=2.0];
+        nature_integrators [label="Continuous Acceleration Integrations:\nv_robot = ∫ (dv/dt) dt\nw_robot = ∫ (dw/dt) dt", fillcolor="#FFFFFF", color="#455A64"];
+
+        power_inverter -> electromag;
+        electromag -> chassis_physics;
+        chassis_physics -> nature_integrators;
+    }
+
+    svpwm_block -> power_inverter [label=" Gate PWM pulses"];
+
+    // ====================================================
+    // STAGE 8: SENSOR TELEMETRY & FEEDBACK CHANNELS
+    // ====================================================
+    subgraph cluster_stage8 {
+        label = "Stage 8: Sensor Telemetry & Feedback Conversion";
+        style = "rounded,filled";
+        fillcolor = "#FAFAFA";
+        color = "#757575";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        encoder_sensor [label="Wheel Encoders & Odometry (1 kHz):\nReads shaft quadrature counts\nodom_v = (dL + dR) / (2 · dt)", fillcolor="#FFFFFF", color="#757575"];
+        imu_gyro [label="Onboard 6-Axis IMU Gyroscope (1 kHz):\nReads true spatial yaw rotation rate\nw_gyro = IMU_Z_rate_rad_s (mcb.inav.ahrs)", fillcolor="#FFFFFF", color="#757575"];
+        current_shunts [label="Phase Shunt Resistors & ADC (16-20 kHz):\nSamples phase currents Ia, Ib\nCalculates real Iq_meas via Clarke/Park", fillcolor="#FFFFFF", color="#757575"];
+    }
+
+    nature_integrators -> encoder_sensor [label=" Wheel rotations"];
+    nature_integrators -> imu_gyro [label=" Chassis angular motion"];
+    power_inverter -> current_shunts [label=" Phase currents"];
+
+    // Close Feedback Loops
+    encoder_sensor -> sum_err_v [style="dashed", color="#D32F2F", penwidth=2.0, label=" odom_v_m_s (-)"];
+    imu_gyro -> sum_err_w [style="dashed", color="#512DA8", penwidth=2.0, label=" gyro_w_rad_s (-)"];
+    current_shunts -> foc_current_loop [style="dashed", color="#0288D1", penwidth=2.0, label=" Iq_meas (-)"];
+}
