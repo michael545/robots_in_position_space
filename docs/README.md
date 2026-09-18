@@ -60,6 +60,19 @@ This documentation captures the first-principles mathematics, multi-body physica
 * **Tire Scrub & Friction Adaptivity:** Dynamic trimming of skid-steer yaw scrub via closed-loop onboard IMU rate gyroscope.
 * **The Sub-Millisecond Bandwidth Imperative:** Why the MCU's $< 1\text{ ms}$ reaction time is required to prevent slip-trenching and rollback that a $50\text{ ms}$ SBC transport loop cannot catch.
 
+### [Document 10: Socratic Inquiries on Mobile Robot Physics & Control](10_SOCRATIC_PHYSICS_AND_CONTROL_DIALOGUES.md)
+* **The Wheel Spin in Mud vs. Ice Dilemma:** Resolving why position error blows up in high-resistance mud ruts (soil shearing and stall) vs. frictionless ice slip.
+* **The Integration-Differentiation-Reintegration Paradox:** Deconstructing why legacy firmware integrates in `drive.c`, differentiates in `trajectory_ctrl.c`, and re-integrates at 1 kHz (rate-transition bridge).
+* **Quadrature Voltage ($V_q$) to Mechanical Position ($\theta$):** Proving how commanding $V_q$ synthesizes a virtual magnetic spring through FOC and double mechanical integration.
+* **Deconstructing `Duration = 0`:** Demystifying the modality switch between canned S-curve point-to-point moves and real-time follow mode in ST MCSDK.
+* **Finite Viscous Impedance vs. Infinite Rigidity:** Mathematical transfer function proofs showing why $Z(s) = B_d + K_i/s$ outperforms rigid $Z(s) \to \infty$ on rough farm terrain.
+
+### [Visual Control Diagrams & Flowcharts](control_diagrams/README.md)
+* **[control_path.svg](control_diagrams/control_path.svg):** Scalable vector graphic tracing the complete path from ROS 2 (`move_smooth`, `clothoid_trajectory_executor`, `teleop_twist_keyboard`) over `UART_serial` to motor FOC.
+* **[control_path.png](control_diagrams/control_path.png):** High-resolution raster rendering for instant documentation preview.
+* **[control_path.mmd](control_diagrams/control_path.mmd):** Standalone Mermaid definition for online editing at [mermaid.live](https://mermaid.live).
+* **[control_path.dot](control_diagrams/control_path.dot):** Source Graphviz definition with color-coded multi-rate execution layers.
+
 ---
 
 

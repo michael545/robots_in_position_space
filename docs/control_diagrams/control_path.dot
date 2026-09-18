@@ -1,0 +1,135 @@
+digraph ControlPath {
+    graph [rankdir=TB, splines=true, nodesep=0.6, ranksep=0.7, fontname="Helvetica", fontsize=12, pad="0.4"];
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, margin="0.2,0.15"];
+    edge [fontname="Helvetica", fontsize=10, penwidth=1.5];
+
+    // ====================================================
+    // LAYER 1: SBC / ROS 2 HIGH-LEVEL CONTROL NODES
+    // ====================================================
+    subgraph cluster_layer1 {
+        label = "Layer 1: High-Level Autonomy & Trajectory Generation (ROS 2 SBC) [20 - 50 Hz]";
+        style = "rounded,filled";
+        fillcolor = "#E1F5FE";
+        color = "#0288D1";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        high_level_node [label="High-Level ROS 2 Control Node:\n• move_smooth (Smooth velocity profiler)\n• clothoid_trajectory_executor (C2D clothoid follower)\n• teleop_twist_keyboard (Manual operator)", fillcolor="#FFFFFF", color="#0288D1"];
+        ros_msg [label="Message Payload (/cmd_vel):\n• v_lin (Linear velocity: linear_speed_mm_s)\n• omega_angular (Angular velocity: rotational_speed_mrad_s)", fillcolor="#FFFFFF", color="#0288D1"];
+        uart_rx [label="Microcontroller UART_serial RX\nUnpacks streamed (v_lin, omega_angular) packet\nGuarded by valid_ms watchdog timer (300 ms)", fillcolor="#FFFFFF", color="#0288D1"];
+    }
+
+    // ====================================================
+    // LAYER 2: FIRMWARE KINEMATICS & INTEGRATOR
+    // ====================================================
+    subgraph cluster_layer2 {
+        label = "Layer 2: MCB G6 Firmware: drive.c [50 - 100 Hz | Δt = 10-20 ms]";
+        style = "rounded,filled";
+        fillcolor = "#FFFDE7";
+        color = "#FBC02D";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        diff_split [label="Kinematic Unicycle Decomposition (drive.c:329)\nv_left  = v_lin - (b/2)·omega_angular\nv_right = v_lin + (b/2)·omega_angular", fillcolor="#FFFFFF", color="#FBC02D"];
+        wheel_speed [label="Wheel Angular Velocity\nω_wheel = v_wheel / r", fillcolor="#FFFFFF", color="#FBC02D"];
+        synth_angle [label="Synthetic Moving Target Angle (drive.c:575)\n[INTEGRATION #1]\nθ_target += ω_wheel · dt_loop\n(Accumulates continuous artificial angle target)", fillcolor="#FFF59D", color="#F57F17", penwidth=2.0];
+        api_call [label="Call MCSDK API (drive.c:58)\nMC_ProgramPositionCommandMotor(θ_target, Duration = 0)", fillcolor="#FFFFFF", color="#FBC02D"];
+    }
+
+    // ====================================================
+    // LAYER 3: DEAD-RECKONING EXTRAPOLATOR
+    // ====================================================
+    subgraph cluster_layer3 {
+        label = "Layer 3: Rate-Transition Extrapolator: trajectory_ctrl.c [On Packet Arrival]";
+        style = "rounded,filled";
+        fillcolor = "#FFF3E0";
+        color = "#FB8C00";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        tc_follow [label="TC_FollowCommand() (trajectory_ctrl.c:145)\ndt = TcTick · SysTickPeriod (arrival elapsed time)", fillcolor="#FFFFFF", color="#FB8C00"];
+        diff_omega [label="Numerical Differentiation #1 (trajectory_ctrl.c:157)\n[DIFFERENTIATION #1: Velocity]\nω_est = (θ_target - θ_prev) / dt", fillcolor="#FFE0B2", color="#E65100", penwidth=2.0];
+        diff_alpha [label="Numerical Differentiation #2 (trajectory_ctrl.c:165)\n[DIFFERENTIATION #2: Accel]\nα_est = (ω_est - ω_prev) / dt", fillcolor="#FFE0B2", color="#E65100", penwidth=2.0];
+        store_state [label="Store Dynamic State\npHandle->Omega = ω_est\npHandle->Acceleration = α_est\npHandle->Theta = θ_target", fillcolor="#FFFFFF", color="#FB8C00"];
+    }
+
+    // ====================================================
+    // LAYER 4: 1 kHz POSITION REGULATOR ISR
+    // ====================================================
+    subgraph cluster_layer4 {
+        label = "Layer 4: Medium-Frequency Motor Timer ISR [1,000 Hz | Δt = 1 ms]";
+        style = "rounded,filled";
+        fillcolor = "#E8F5E9";
+        color = "#43A047";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        tc_exec [label="TC_FollowExecution() (trajectory_ctrl.c:309)\n[INTEGRATION #2: 1 ms Dead-Reckoning]\nω_ref += α_est · 1ms\nθ_ref += ω_ref · 1ms\n(Smoothly reconstructs 19 intermediate points between packets!)", fillcolor="#C8E6C9", color="#2E7D32", penwidth=2.0];
+        pos_err [label="Position Error Comparator (Line 216)\ne_θ = θ_ref - θ_actual_encoder", fillcolor="#FFFFFF", color="#43A047"];
+        pos_pid [label="Position PID Regulator (Line 217)\nIq* = Kp·e_θ + Ki·∫e_θ dt + Kd·(de_θ/dt)\n(Demanded torque current along q-axis)", fillcolor="#FFFFFF", color="#43A047"];
+        slew_limit [label="Torque Slew-Rate Limiter (Line 224)\nClamps |dIq*/dt| <= pos_torque_slew_rate", fillcolor="#FFFFFF", color="#43A047"];
+    }
+
+    // ====================================================
+    // LAYER 5: 16-20 kHz FOC CURRENT REGULATOR
+    // ====================================================
+    subgraph cluster_layer5 {
+        label = "Layer 5: Ultra-Fast FOC Interrupt [16 - 20 kHz | Δt = 50-62.5 µs]";
+        style = "rounded,filled";
+        fillcolor = "#F3E5F5";
+        color = "#8E24AA";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        cur_pi [label="q-Axis Current PI Regulator\ne_iq = Iq* - Iq_meas\nVq = Kp_i·e_iq + Ki_i·∫e_iq dt + ω_e·ψ_f\n(Outputs Quadrature Voltage Vq)", fillcolor="#FFFFFF", color="#8E24AA"];
+        inv_park [label="Inverse Park Transform\n(Vd=0, Vq, θ_e) ──► (Vα, Vβ)", fillcolor="#FFFFFF", color="#8E24AA"];
+        svpwm [label="Space Vector Modulation (SVPWM)\nCalculates Gate Duty Cycles (Ta, Tb, Tc)", fillcolor="#FFFFFF", color="#8E24AA"];
+    }
+
+    // ====================================================
+    // LAYER 6: POWER ELECTRONICS & MOTOR PHYSICS
+    // ====================================================
+    subgraph cluster_layer6 {
+        label = "Layer 6: Physical Motor & Rotor Mechanics (Continuous Nature)";
+        style = "rounded,filled";
+        fillcolor = "#ECEFF1";
+        color = "#546E7A";
+        fontname = "Helvetica-Bold";
+        fontsize = 12;
+
+        inverter [label="3-Phase Inverter Bridge\n6 MOSFETs switch 48V DC Bus", fillcolor="#FFFFFF", color="#546E7A"];
+        stator_rl [label="Stator Winding RL Circuit\nVq = R·Iq + L·(dIq/dt) + Back_EMF\n(Pushes real phase current Iq)", fillcolor="#FFFFFF", color="#546E7A"];
+        lorentz [label="Lorentz Force Law\nτ_motor = (3/2)·p·ψ_f·Iq = Kt·Iq\n(Physical Torque on Rotor)", fillcolor="#FFFFFF", color="#546E7A"];
+        newton [label="Newton's 2nd Rotational Law\nα_rotor = (τ_motor - τ_load) / J", fillcolor="#FFFFFF", color="#546E7A"];
+        nature_integrator [label="Continuous Nature Integrators\n[PHYSICS INTEGRATION #1 & #2]\nω_rotor = ∫ α_rotor dt\nθ_rotor = ∫ ω_rotor dt", fillcolor="#CFD8DC", color="#37474F", penwidth=2.0];
+    }
+
+    // Forward Signal Connections
+    high_level_node -> ros_msg [label=" Publishes cmd_vel"];
+    ros_msg -> uart_rx [label=" UART_serial (Streamed packet)"];
+    uart_rx -> diff_split;
+    diff_split -> wheel_speed;
+    wheel_speed -> synth_angle;
+    synth_angle -> api_call;
+    api_call -> tc_follow [label=" Duration = 0 (Follow Mode)"];
+    tc_follow -> diff_omega;
+    diff_omega -> diff_alpha;
+    diff_alpha -> store_state;
+    store_state -> tc_exec [label=" 1 ms Hardware ISR tick"];
+    tc_exec -> pos_err;
+    pos_err -> pos_pid;
+    pos_pid -> slew_limit;
+    slew_limit -> cur_pi [label=" Iq* reference"];
+    cur_pi -> inv_park;
+    inv_park -> svpwm;
+    svpwm -> inverter [label=" PWM Gates"];
+    inverter -> stator_rl;
+    stator_rl -> lorentz;
+    lorentz -> newton;
+    newton -> nature_integrator;
+
+    // Feedback Connections
+    nature_integrator -> pos_err [style="dashed", color="#D32F2F", penwidth=1.5, label=" Encoder Count θ_encoder"];
+    nature_integrator -> inv_park [style="dashed", color="#7B1FA2", penwidth=1.5, label=" Electrical Angle θ_e = p·θ_rotor"];
+    stator_rl -> cur_pi [style="dashed", color="#1976D2", penwidth=1.5, label=" Shunt Current ADC (Iq_meas)"];
+}

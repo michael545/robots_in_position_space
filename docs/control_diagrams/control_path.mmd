@@ -1,0 +1,111 @@
+%% =========================================================================
+%% Complete Control Path: From High-Level ROS 2 Node to FOC Motor Physics
+%% Ubiquity Robotics Magni MCB G6 Firmware Stack
+%% Editable online at: https://mermaid.live
+%% =========================================================================
+
+flowchart TD
+    %% ==========================================
+    %% LAYER 1: SBC / ROS 2 HIGH-LEVEL CONTROL NODES
+    %% ==========================================
+    subgraph L1 ["Layer 1: High-Level ROS 2 Autonomy (20 - 50 Hz | Δt = 20-50 ms)"]
+        direction TB
+        HighLevelNode["High-Level Control Nodes:\n• move_smooth\n• clothoid_trajectory_executor\n• teleop_twist_keyboard"]
+        CmdVel["Message Payload (/cmd_vel):\n• v_lin (linear_speed_mm_s)\n• omega_angular (rotational_speed_mrad_s)"]
+        UartRx["Microcontroller UART_serial RX\nUnpacks streamed speed packet\nGuarded by valid_ms watchdog (300 ms)"]
+        
+        HighLevelNode -->|"Publishes cmd_vel"| CmdVel
+        CmdVel -->|"UART_serial"| UartRx
+    end
+
+    %% ==========================================
+    %% LAYER 2: FIRMWARE KINEMATICS & INTEGRATOR
+    %% ==========================================
+    subgraph L2 ["Layer 2: MCB G6 Firmware drive.c (50 - 100 Hz | Δt = 10-20 ms)"]
+        direction TB
+        DiffDrive["Kinematic Unicycle Decomposition (drive.c:329):\nv_left  = v_lin - (b/2)·omega_angular\nv_right = v_lin + (b/2)·omega_angular"]
+        WheelSpeed["Wheel Angular Velocity:\nω_wheel = v_wheel / r"]
+        SynthAngle["Synthetic Moving Target Angle (drive.c:575):\n[INTEGRATION #1]\nθ_target += ω_wheel · dt_loop\n(Accumulates continuous artificial angle target)"]
+        ApiCall["Call ST MCSDK API (drive.c:58):\nMC_ProgramPositionCommandMotor(θ_target, Duration = 0)"]
+
+        DiffDrive --> WheelSpeed
+        WheelSpeed --> SynthAngle
+        SynthAngle --> ApiCall
+    end
+
+    UartRx --> DiffDrive
+
+    %% ==========================================
+    %% LAYER 3: DEAD-RECKONING EXTRAPOLATOR
+    %% ==========================================
+    subgraph L3 ["Layer 3: Rate-Transition Extrapolator: trajectory_ctrl.c (On Arrival)"]
+        direction TB
+        TC_Follow["TC_FollowCommand() (trajectory_ctrl.c:145)\ndt = TcTick · SysTickPeriod (elapsed arrival time)"]
+        DiffOmega["Numerical Differentiation #1 (trajectory_ctrl.c:157):\n[DIFFERENTIATION #1: Velocity]\nω_est = (θ_target - θ_prev) / dt"]
+        DiffAlpha["Numerical Differentiation #2 (trajectory_ctrl.c:165):\n[DIFFERENTIATION #2: Accel]\nα_est = (ω_est - ω_prev) / dt"]
+        StoreState["Store Dynamic Derivatives:\npHandle->Omega = ω_est\npHandle->Acceleration = α_est\npHandle->Theta = θ_target"]
+
+        TC_Follow --> DiffOmega
+        DiffOmega --> DiffAlpha
+        DiffAlpha --> StoreState
+    end
+
+    ApiCall -->|"Duration = 0 (Follow Mode)"| TC_Follow
+
+    %% ==========================================
+    %% LAYER 4: 1 kHz POSITION REGULATOR ISR
+    %% ==========================================
+    subgraph L4 ["Layer 4: Medium-Frequency Motor Timer ISR (1,000 Hz | Δt = 1 ms)"]
+        direction TB
+        TC_Exec["TC_FollowExecution() (trajectory_ctrl.c:309)\n[INTEGRATION #2: 1 ms Dead-Reckoning]\nω_ref += α_est · 1ms\nθ_ref += ω_ref · 1ms\n(Smooths 19 missing intermediate points between packets!)"]
+        PosErr["Position Error Comparator (Line 216):\ne_θ = θ_ref - θ_actual_encoder"]
+        PosPID["Position PID Regulator (Line 217):\nIq* = Kp·e_θ + Ki·∫e_θ dt + Kd·(de_θ/dt)\n(Demanded current along q-axis)"]
+        Slew["Torque Slew-Rate Limiter (Line 224):\nClamps |dIq*/dt| <= pos_torque_slew_rate"]
+
+        TC_Exec --> PosErr
+        PosErr --> PosPID
+        PosPID --> Slew
+    end
+
+    StoreState -.->|"1 ms Hardware Timer ISR tick"| TC_Exec
+
+    %% ==========================================
+    %% LAYER 5: 16-20 kHz FOC CURRENT REGULATOR
+    %% ==========================================
+    subgraph L5 ["Layer 5: Ultra-Fast FOC Interrupt (16 - 20 kHz | Δt = 50-62.5 µs)"]
+        direction TB
+        CurLoop["q-Axis Current PI Regulator:\ne_iq = Iq* - Iq_meas\nVq = Kp_i·e_iq + Ki_i·∫e_iq dt + ω_e·ψ_f\n(Outputs Quadrature Voltage Vq)"]
+        InvPark["Inverse Park Transform:\n(Vd=0, Vq, θ_e) ──► (Vα, Vβ)"]
+        SVPWM["Space Vector Modulation (SVPWM):\nCalculates Gate Duty Cycles (Ta, Tb, Tc)"]
+
+        CurLoop --> InvPark
+        InvPark --> SVPWM
+    end
+
+    Slew -->|"Iq* reference"| CurLoop
+
+    %% ==========================================
+    %% LAYER 6: POWER ELECTRONICS & MOTOR PHYSICS
+    %% ==========================================
+    subgraph L6 ["Layer 6: Physical Motor & Mechanics (Continuous Nature)"]
+        direction TB
+        HBridge["3-Phase Inverter Bridge (6 MOSFETs)\nSwitches Bus Voltage (48V) at 20 kHz"]
+        Stator["Stator Winding RL Circuit:\nVq = R·Iq + L·(dIq/dt) + Back_EMF\n(Pushes real phase current Iq)"]
+        Lorentz["Lorentz Force Law:\nτ_motor = (3/2)·p·ψ_f·Iq = Kt·Iq\n(Physical Torque on Rotor)"]
+        Newton["Newton's 2nd Rotational Law:\nα_rotor = (τ_motor - τ_load) / J"]
+        NatureInteg["Continuous Nature Integrators:\n[PHYSICS INTEGRATION #1 & #2]\nω_rotor = ∫ α_rotor dt\nθ_rotor = ∫ ω_rotor dt"]
+
+        HBridge --> Stator
+        Stator --> Lorentz
+        Lorentz --> Newton
+        Newton --> NatureInteg
+    end
+
+    SVPWM -->|"PWM Gates"| HBridge
+
+    %% ==========================================
+    %% FEEDBACK CHANNELS
+    %% ==========================================
+    NatureInteg -.->|"Encoder Hardware Counts (θ_encoder)"| PosErr
+    NatureInteg -.->|"Electrical Angle θ_e = p · θ_rotor"| InvPark
+    Stator -.->|"Shunt Resistor ADC (Iq_meas)"| CurLoop
